@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Room Android Touch</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; touch-action: none; }
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 12px; height: 12px;
+            border: 2px solid white; border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none; opacity: 0.7;
+            z-index: 10;
+        }
+        #info {
+            position: absolute; bottom: 10px; left: 10px;
+            color: white; font-family: sans-serif; font-size: 12px;
+            pointer-events: none; background: rgba(0,0,0,0.5); padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="crosshair"></div>
+    <div id="info">Управляйте пальцем, чтобы смотреть на картину</div>
+    
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, raycaster;
+        let painting, heatMaterial;
+        let heatIntensity = 0.0;
+        const clock = new THREE.Clock();
+        const centerPoint = new THREE.Vector2(0, 0);
+
+        // Переменные для сенсорного управления
+        let lastTouchX = 0;
+        let lastTouchY = 0;
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio); // Важно для четкости на Android
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            raycaster = new THREE.Raycaster();
+
+            const loader = new THREE.TextureLoader();
+            
+            // Загрузка ваших текстур
+            const floorTex = loader.load('i (2).jpeg');
+            const wallTex = loader.load('photo-wall-texture-pattern_58702-12902.jpg');
+            const paintingTex = loader.load('InShot_20260322_110800776.jpg');
+
+            // Пол
+            const floor = new THREE.Mesh(
+                new THREE.PlaneGeometry(20, 20),
+                new THREE.MeshStandardMaterial({ map: floorTex })
+            );
+            floor.rotation.x = -Math.PI / 2;
+            scene.add(floor);
+
+            // Стены
+            const room = new THREE.Mesh(
+                new THREE.BoxGeometry(20, 10, 20),
+                new THREE.MeshStandardMaterial({ map: wallTex, side: THREE.BackSide })
+            );
+            room.position.y = 5;
+            scene.add(room);
+
+            // Шейдер горячего воздуха
+            heatMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    tDiffuse: { value: paintingTex },
+                    time: { value: 0.0 },
+                    intensity: { value: 0.0 }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform sampler2D tDiffuse;
+                    uniform float time;
+                    uniform float intensity;
+                    varying vec2 vUv;
+                    void main() {
+                        vec2 uv = vUv;
+                        float wave = sin(uv.y * 15.0 + time * 4.0) * 0.015 * intensity;
+                        uv.x += wave;
+                        gl_FragColor = texture2D(tDiffuse, uv);
+                    }
+                `
+            });
+
+            painting = new THREE.Mesh(new THREE.PlaneGeometry(4, 5), heatMaterial);
+            painting.position.set(0, 5, -9.8);
+            scene.add(painting);
+
+            // Освещение
+            const light = new THREE.PointLight(0xffffff, 80);
+            light.position.set(0, 7, 0);
+            scene.add(light);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+            camera.position.set(0, 3, 5);
+
+            // --- СЕНСОРНОЕ УПРАВЛЕНИЕ (Android) ---
+            
+            window.addEventListener('touchstart', (e) => {
+                lastTouchX = e.touches[0].pageX;
+                lastTouchY = e.touches[0].pageY;
+            }, { passive: false });
+
+            window.addEventListener('touchmove', (e) => {
+                const touchX = e.touches[0].pageX;
+                const touchY = e.touches[0].pageY;
+                
+                const deltaX = touchX - lastTouchX;
+                const deltaY = touchY - lastTouchY;
+
+                const sensitivity = 0.005;
+                camera.rotation.y -= deltaX * sensitivity;
+                camera.rotation.x -= deltaY * sensitivity;
+                
+                // Ограничение взгляда вверх/вниз
+                camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+
+                lastTouchX = touchX;
+                lastTouchY = touchY;
+                
+                e.preventDefault(); // Предотвращает прокрутку страницы
+            }, { passive: false });
+
+            // Поддержка мыши для ПК тоже остается
+            window.addEventListener('mousemove', (e) => {
+                if (document.pointerLockElement) {
+                    camera.rotation.y -= e.movementX * 0.002;
+                    camera.rotation.x -= e.movementY * 0.002;
+                }
+            });
+
+            window.addEventListener('click', () => {
+                if (!/Android|iPhone/i.test(navigator.userAgent)) {
+                    document.body.requestPointerLock();
+                }
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getElapsedTime();
+
+            // Проверка взгляда (Raycasting)
+            raycaster.setFromCamera(centerPoint, camera);
+            const intersects = raycaster.intersectObject(painting);
+
+            if (intersects.length > 0) {
+                heatIntensity = THREE.MathUtils.lerp(heatIntensity, 1.0, 0.05);
+            } else {
+                heatIntensity = THREE.MathUtils.lerp(heatIntensity, 0.0, 0.05);
+            }
+
+            heatMaterial.uniforms.time.value = delta;
+            heatMaterial.uniforms.intensity.value = heatIntensity;
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
